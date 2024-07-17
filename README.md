@@ -5,7 +5,7 @@
 ```
 @article{wang2024off,
   title={Off-Path TCP Hijacking in Wi-Fi Networks: A Packet-Size Side Channel Attack},
-  author={Wang, Ziqiang and Feng, Xuewei and Li, Qi and Sun, Kun and Yang, Yuxiang and Li, Mengyuan and Xu, Ke},
+  author={Wang, Ziqiang and Feng, David and Li, Qi and Sun, Kun and Yang, Yuxiang and Li, Mengyuan and Xu, Ke},
   journal={arXiv preprint arXiv:2402.12716},
   year={2024}
 }
