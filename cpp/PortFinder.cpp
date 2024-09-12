@@ -11,32 +11,17 @@
 
 using namespace Tins;
 
-void PortFinder::capturePackets_1(std::vector<Packet>& pkts_1) {
+void PortFinder::capturePackets(std::vector<Packet>& pkts, int sniff_if_index) {
     SnifferConfiguration config;
     config.set_filter("wlan addr1 " + client_mac);
     config.set_immediate_mode(true);
-    Sniffer sniffer(sniff_if_name[0], config);
+    Sniffer sniffer(sniff_if_name[sniff_if_index], config);
 
     auto s_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::milliseconds(100);
     while (std::chrono::high_resolution_clock::now()-s_time < duration) {
         Packet packet=sniffer.next_packet();
-        pkts_1.push_back(packet);
-    }
-
-}
-
-void PortFinder::capturePackets_2(std::vector<Packet>& pkts_2) {
-    SnifferConfiguration config;
-    config.set_filter("wlan addr1 " + client_mac);
-    config.set_immediate_mode(true);
-    Sniffer sniffer(sniff_if_name[1], config);
-
-    auto s_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::milliseconds(100);
-    while (std::chrono::high_resolution_clock::now()-s_time < duration) {
-        Packet packet=sniffer.next_packet();
-        pkts_2.push_back(packet);
+        pkts.push_back(packet);
     }
 
 }
@@ -73,12 +58,14 @@ void PortFinder::check_port_list(const std::vector<uint16_t>& port_list) {
             IP packet_1 = IP(server_ip, client_ip) / TCP(server_port, p) / RawPDU("AAA");
             TCP &tcp_1 = packet_1.rfind_pdu<TCP>();
             tcp_1.set_flag(TCP::ACK, true);
-            tcp_1.seq(0);
+            tcp_1.seq(1);
+            tcp_1.ack_seq(random_ack);
 
             IP packet_2 = IP(server_ip, client_ip) / TCP(server_port, p) / RawPDU("AAA");
             TCP &tcp_2 = packet_2.rfind_pdu<TCP>();
             tcp_2.set_flag(TCP::ACK, true);
-            tcp_2.seq(1<<31);
+            tcp_2.seq((1<<31)+1);
+            tcp_1.ack_seq(random_ack);
 
             send_list.emplace_back(packet_1);
             send_list.emplace_back(packet_2);
@@ -90,16 +77,20 @@ void PortFinder::check_port_list(const std::vector<uint16_t>& port_list) {
         send_byte += pkt.size();
     }
 
-    //First sniff Wi-Fi card
-    std::vector<Packet> pkts_1;
-    PortFinder sniff_object;
-    std::thread sniffer_thread_1(&PortFinder::capturePackets_1, &sniff_object, std::ref(pkts_1));
+    std::vector<std::vector<Packet>> sniff_pkts_vec;
+    int sniff_pkts_vec_num = sniff_if_name.size();
+    
+    for(int i=0; i<sniff_pkts_vec_num; i++){
+        std::vector<Packet> sniff_pkts;
+        sniff_pkts_vec.push_back(sniff_pkts);
+    }
 
-    //Second sniff Wi-Fi card
-    std::vector<Packet> pkts_2;
-    PortFinder sniff_object_2;
-    std::thread sniffer_thread_2(&PortFinder::capturePackets_2, &sniff_object_2, std::ref(pkts_2));
+    std::vector<std::thread> sniff_thread_vec;
+    for(int i=0; i<sniff_pkts_vec.size(); i++){
+        sniff_thread_vec.emplace_back(&PortFinder::capturePackets, this, std::ref(sniff_pkts_vec[i]), i);
+    }
 
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
 
     PacketSender sender;
 
@@ -119,13 +110,19 @@ void PortFinder::check_port_list(const std::vector<uint16_t>& port_list) {
         sender.send(add_packet, send_if_name);
     }
 
-    sniffer_thread_1.join();
-    sniffer_thread_2.join();
+    for(auto& t: sniff_thread_vec){
+        if(t.joinable()){
+            t.join();
+        }
+    }
 
     /* Merge sniffed Wi-Fi frames */
-    pkts_1.insert(pkts_1.end(), pkts_2.begin(), pkts_2.end());
+    std::vector<Packet> sniff_pkts_merge;
+    for(int i=0; i<sniff_pkts_vec.size(); i++){
+        sniff_pkts_merge.insert(sniff_pkts_merge.end(), sniff_pkts_vec[i].begin(), sniff_pkts_vec[i].end());
+    }
 
-    handle_packets(pkts_1);
+    handle_packets(sniff_pkts_merge);
 }
 
 void PortFinder::find_port() {
@@ -259,6 +256,12 @@ void PortFinder::run() {
     send_byte = 0;
     cost_time = 0;
     result = -1;
+
+    std::random_device rd;
+    std::mt19937_64 eng(rd());
+    std::uniform_int_distribution<uint32_t> distr(0, maxUint32Value);
+    random_ack = distr(eng);
+
     find_port();
     
     auto time_end = std::chrono::system_clock::now();

